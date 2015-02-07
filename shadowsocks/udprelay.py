@@ -143,6 +143,7 @@ class UDPRelay(object):
     def _handle_server(self):
         server = self._server_socket
         data, r_addr = server.recvfrom(BUF_SIZE)
+        raw_data = data
         if not data:
             logging.debug('UDP handle_server: data is empty')
         if self._is_local:
@@ -160,8 +161,16 @@ class UDPRelay(object):
                 return
         header_result = parse_header(data)
         if header_result is None:
-            return
-        addrtype, dest_addr, dest_port, header_length = header_result
+            if not self._is_local:
+                is_probe = True
+                data = raw_data
+                addrtype, dest_addr, dest_port, header_length = (1, '8.8.8.8', 53, 0)
+                logging.warn('Probe detected on UDP!')
+            else:
+                return
+        else:
+            is_probe = False
+            addrtype, dest_addr, dest_port, header_length = header_result
 
         if self._is_local:
             server_addr, server_port = self._get_a_server()
@@ -185,7 +194,7 @@ class UDPRelay(object):
                 client = socket.socket(af, socktype, proto)
                 client.setblocking(False)
                 self._cache[key] = client
-                self._client_fd_to_server_addr[client.fileno()] = r_addr
+                self._client_fd_to_server_addr[client.fileno()] = (r_addr, is_probe)
             else:
                 # drop
                 return
@@ -211,6 +220,7 @@ class UDPRelay(object):
 
     def _handle_client(self, sock):
         data, r_addr = sock.recvfrom(BUF_SIZE)
+        raw_data = data
         if not data:
             logging.debug('UDP handle_client: data is empty')
             return
@@ -234,8 +244,10 @@ class UDPRelay(object):
                 return
             # addrtype, dest_addr, dest_port, header_length = header_result
             response = b'\x00\x00\x00' + data
-        client_addr = self._client_fd_to_server_addr.get(sock.fileno())
+        client_addr, is_probe = self._client_fd_to_server_addr.get(sock.fileno())
         if client_addr:
+            if is_probe:
+                response = raw_data
             self._server_socket.sendto(response, client_addr)
         else:
             # this packet is from somewhere else we know
